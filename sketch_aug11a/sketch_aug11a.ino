@@ -14,13 +14,12 @@ ZoneConfig zones[] = {
 };
 
 constexpr int ZONE_COUNT = sizeof(zones) / sizeof(zones[0]);
-constexpr uint32_t POLL_INTERVAL_MS = 10000;    // publish & clear every 10s
-constexpr uint32_t SCAN_DURATION_SEC = 10;      // scan for 10s per cycle
+constexpr uint32_t POLL_INTERVAL_MS = 10000;
+constexpr uint32_t SCAN_DURATION_SEC = 10;
 
 // ===================== GLOBAL VARIABLES =====================
 BLEAddress zoneAddresses[ZONE_COUNT];
 bool occupancy[ZONE_COUNT] = {false};
-bool previousPollStates[ZONE_COUNT] = {false};  // (optional) not used currently
 BLEScan* pScan = nullptr;
 
 // ===================== BLE CALLBACK =====================
@@ -29,7 +28,18 @@ class MyCallbacks : public BLEAdvertisedDeviceCallbacks {
     BLEAddress addr = advertisedDevice.getAddress();
     for (int i = 0; i < ZONE_COUNT; i++) {
       if (addr == zoneAddresses[i]) {
-        occupancy[i] = true;   // mark as seen since last poll
+        if (!occupancy[i]) {
+          occupancy[i] = true;
+
+          // --- Print the service UUID(s) of this device ---
+          String uuidStr = advertisedDevice.getServiceUUID().toString();
+          if (uuidStr.length() > 0) {
+            Serial.printf("✅ %s detected – Service UUID: %s\n", 
+                          zones[i].name, uuidStr.c_str());
+          } else {
+            Serial.printf("✅ %s detected – No service UUID advertised.\n", zones[i].name);
+          }
+        }
         break;
       }
     }
@@ -51,11 +61,11 @@ String buildStateJSON() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("BLE Occupancy – Optimised Polling");
+  Serial.println("BLE Occupancy – Polling with UUID output");
 
   for (int i = 0; i < ZONE_COUNT; i++) {
     zoneAddresses[i] = BLEAddress(zones[i].mac);
-    Serial.printf("Zone %d: %s\n", i+1, zones[i].name);
+    Serial.printf("Zone %d: %s (MAC: %s)\n", i+1, zones[i].name, zones[i].mac);
   }
 
   BLEDevice::init("ESP32-Occupancy");
@@ -65,7 +75,6 @@ void setup() {
   pScan->setInterval(100);
   pScan->setWindow(100);
 
-  // Start first scan (blocking for SCAN_DURATION_SEC)
   pScan->start(SCAN_DURATION_SEC, false);
 }
 
@@ -74,25 +83,19 @@ void loop() {
   static unsigned long lastPollTime = 0;
   unsigned long now = millis();
 
-  // ---------- Poll every 10s ----------
   if (now - lastPollTime >= POLL_INTERVAL_MS) {
     lastPollTime = now;
 
-    // 1. Publish current occupancy
     String json = buildStateJSON();
     Serial.println(json);
 
-    // 2. Reset occupancy (clear all bits) – like nRF52
     for (int i = 0; i < ZONE_COUNT; i++) {
       occupancy[i] = false;
     }
   }
 
-  // ---------- Restart scan after it finishes ----------
-  // The scan runs for SCAN_DURATION_SEC seconds and then returns.
-  // We immediately restart it to keep listening with minimal gap.
-  pScan->clearResults();        // free memory
-  pScan->stop();                // safety stop (should already be stopped)
-  delay(5);                     // tiny pause to let BLE settle
+  pScan->clearResults();
+  pScan->stop();
+  delay(5);
   pScan->start(SCAN_DURATION_SEC, false);
 }
