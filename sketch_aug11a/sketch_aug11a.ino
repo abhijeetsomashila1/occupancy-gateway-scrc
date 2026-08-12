@@ -1,8 +1,6 @@
 #include <BLEDevice.h>
 #include <BLEScan.h>
 #include <ArduinoJson.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
 // ===================== CONFIGURATION =====================
 struct ZoneConfig {
@@ -16,25 +14,22 @@ ZoneConfig zones[] = {
 };
 
 constexpr int ZONE_COUNT = sizeof(zones) / sizeof(zones[0]);
-
-// Polling interval (matches nRF52's 10-second timer)
-constexpr uint32_t POLL_INTERVAL_MS = 10000;
+constexpr uint32_t POLL_INTERVAL_MS = 10000;    // publish & clear every 10s
+constexpr uint32_t SCAN_DURATION_SEC = 10;      // scan for 10s per cycle
 
 // ===================== GLOBAL VARIABLES =====================
 BLEAddress zoneAddresses[ZONE_COUNT];
-bool occupancy[ZONE_COUNT] = {false};        // true = sensor seen since last poll
-bool previousPollStates[ZONE_COUNT] = {false}; // for optional change detection
+bool occupancy[ZONE_COUNT] = {false};
+bool previousPollStates[ZONE_COUNT] = {false};  // (optional) not used currently
 BLEScan* pScan = nullptr;
 
 // ===================== BLE CALLBACK =====================
 class MyCallbacks : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
     BLEAddress addr = advertisedDevice.getAddress();
-
     for (int i = 0; i < ZONE_COUNT; i++) {
       if (addr == zoneAddresses[i]) {
-        // Mark this zone as occupied (will be cleared at next poll)
-        occupancy[i] = true;
+        occupancy[i] = true;   // mark as seen since last poll
         break;
       }
     }
@@ -52,26 +47,17 @@ String buildStateJSON() {
   return jsonStr;
 }
 
-// ===================== BLE SCAN TASK =====================
-void bleScanTask(void* parameter) {
-  Serial.println("BLE Scan Task started. Continuous scanning...");
-  pScan->start(0, false);   // blocks forever – perfect
-  vTaskDelete(NULL);
-}
-
 // ===================== SETUP =====================
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("BLE Occupancy – nRF52-style polling (JSON output)");
+  Serial.println("BLE Occupancy – Optimised Polling");
 
-  // Convert MAC strings to BLEAddress
   for (int i = 0; i < ZONE_COUNT; i++) {
     zoneAddresses[i] = BLEAddress(zones[i].mac);
     Serial.printf("Zone %d: %s\n", i+1, zones[i].name);
   }
 
-  // Initialise BLE
   BLEDevice::init("ESP32-Occupancy");
   pScan = BLEDevice::getScan();
   pScan->setAdvertisedDeviceCallbacks(new MyCallbacks(), true);
@@ -79,9 +65,8 @@ void setup() {
   pScan->setInterval(100);
   pScan->setWindow(100);
 
-  // Create continuous scan task on core 0
-  xTaskCreatePinnedToCore(bleScanTask, "BLEScan", 4096, NULL, 1, NULL, 0);
-  Serial.println("BLE scan task created. Main loop running.");
+  // Start first scan (blocking for SCAN_DURATION_SEC)
+  pScan->start(SCAN_DURATION_SEC, false);
 }
 
 // ===================== MAIN LOOP =====================
@@ -89,19 +74,25 @@ void loop() {
   static unsigned long lastPollTime = 0;
   unsigned long now = millis();
 
-  // Every POLL_INTERVAL_MS, publish JSON and reset occupancy
+  // ---------- Poll every 10s ----------
   if (now - lastPollTime >= POLL_INTERVAL_MS) {
     lastPollTime = now;
 
-    // Build and send JSON
+    // 1. Publish current occupancy
     String json = buildStateJSON();
     Serial.println(json);
 
-    // Reset occupancy (clear all bits) – just like nRF52 does
+    // 2. Reset occupancy (clear all bits) – like nRF52
     for (int i = 0; i < ZONE_COUNT; i++) {
       occupancy[i] = false;
     }
   }
 
-  delay(50);   // small delay to keep loop responsive
+  // ---------- Restart scan after it finishes ----------
+  // The scan runs for SCAN_DURATION_SEC seconds and then returns.
+  // We immediately restart it to keep listening with minimal gap.
+  pScan->clearResults();        // free memory
+  pScan->stop();                // safety stop (should already be stopped)
+  delay(5);                     // tiny pause to let BLE settle
+  pScan->start(SCAN_DURATION_SEC, false);
 }
