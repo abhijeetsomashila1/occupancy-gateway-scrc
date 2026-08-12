@@ -22,6 +22,15 @@ BLEAddress zoneAddresses[ZONE_COUNT];
 bool occupancy[ZONE_COUNT] = {false};
 BLEScan* pScan = nullptr;
 
+// Helper: print raw data as hex
+void printHex(const uint8_t* data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    if (data[i] < 0x10) Serial.print("0");
+    Serial.print(data[i], HEX);
+    if (i < len - 1) Serial.print(" ");
+  }
+}
+
 // ===================== BLE CALLBACK =====================
 class MyCallbacks : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
@@ -31,14 +40,39 @@ class MyCallbacks : public BLEAdvertisedDeviceCallbacks {
         if (!occupancy[i]) {
           occupancy[i] = true;
 
-          // --- Print the service UUID(s) of this device ---
+          Serial.printf("=== %s DETECTED ===\n", zones[i].name);
+          Serial.printf("  MAC: %s\n", addr.toString().c_str());
+          Serial.printf("  RSSI: %d dBm\n", advertisedDevice.getRSSI());
+
+          // ---- Service UUID ----
           String uuidStr = advertisedDevice.getServiceUUID().toString();
           if (uuidStr.length() > 0) {
-            Serial.printf("✅ %s detected – Service UUID: %s\n", 
-                          zones[i].name, uuidStr.c_str());
+            Serial.printf("  Service UUID: %s\n", uuidStr.c_str());
           } else {
-            Serial.printf("✅ %s detected – No service UUID advertised.\n", zones[i].name);
+            Serial.println("  Service UUID: (none)");
           }
+
+          // ---- Manufacturer Data (raw) ----
+          String manuf = advertisedDevice.getManufacturerData();
+          if (manuf.length() > 0) {
+            Serial.print("  Manufacturer Data (hex): ");
+            printHex((const uint8_t*)manuf.c_str(), manuf.length());
+            Serial.println();
+          } else {
+            Serial.println("  Manufacturer Data: (none)");
+          }
+
+          // ---- Service Data (raw) ----
+          String svcData = advertisedDevice.getServiceData();
+          if (svcData.length() > 0) {
+            Serial.print("  Service Data (hex): ");
+            printHex((const uint8_t*)svcData.c_str(), svcData.length());
+            Serial.println();
+          } else {
+            Serial.println("  Service Data: (none)");
+          }
+
+          Serial.println(); // blank line
         }
         break;
       }
@@ -61,7 +95,7 @@ String buildStateJSON() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("BLE Occupancy – Polling with UUID output");
+  Serial.println("BLE Occupancy – Raw Data Output + Polling");
 
   for (int i = 0; i < ZONE_COUNT; i++) {
     zoneAddresses[i] = BLEAddress(zones[i].mac);
