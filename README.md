@@ -1,1 +1,0 @@
-# occupancy-gateway-scrc
